@@ -191,11 +191,13 @@ export async function maybeResizeAndDownsampleImageBuffer(
     // API resizes large images server-side, so the raw buffer can still be
     // passed through to keep paste working.
     if (!metadata?.width || !metadata.height) {
-      // The native processor gave us no dimensions to check, but the API's
-      // stricter many-image 2000px limit still applies — a compact
-      // high-resolution screenshot (e.g. 3840x2160) must not pass through
-      // unresized just because it's small in bytes. Detect format from magic
-      // bytes (not `ext`) since that's also what the raw-return path below needs.
+      // The native processor gave us no dimensions to check. If Canvas is
+      // available, downsample images over the many-image 2000px bound so a
+      // later multi-image request is less likely to 400. If Canvas is not
+      // available (Windows Bun CLI), keep the in-budget buffer — a single
+      // image is resized server-side, and rejecting it recreates #1964.
+      // Detect format from magic bytes (not `ext`) since that's also what
+      // the raw-return path below needs.
       const detected = detectImageFormatFromBuffer(imageBuffer)
       const limitResult = await enforceManyImageDimensionLimit(
         imageBuffer,
@@ -453,12 +455,11 @@ export async function maybeResizeAndDownsampleImageBuffer(
       (imageBuffer.readUInt32BE(16) > IMAGE_MAX_WIDTH ||
         imageBuffer.readUInt32BE(20) > IMAGE_MAX_HEIGHT)
 
-    // The API enforces a *stricter* 2000px dimension limit when a request
-    // carries many images (a single oversized image is resized server-side,
-    // but an oversized image left in conversation history later breaks
-    // many-image requests with a 400 "image dimensions exceed ... many-image"
-    // error). The native processor has failed, so even when base64 is within
-    // the limit we must not let an image over this bound pass through unchanged.
+    // When Canvas exists, downsample images over the many-image 2000px bound
+    // so they are less likely to 400 a later multi-image request. When it
+    // does not (Windows Bun CLI), leave an in-budget single image alone —
+    // the API resizes that case server-side, and throwing here is caught by
+    // getImageFromClipboard() as "No image found".
     if (base64Size <= API_IMAGE_MAX_BASE64_SIZE) {
       const limitResult = await enforceManyImageDimensionLimit(
         imageBuffer,
@@ -996,11 +997,17 @@ function readJpegDimensions(
       return null
     }
     let i = 2
-    while (i + 9 < buffer.length) {
+    while (i + 1 < buffer.length) {
       if (buffer[i] !== 0xff) {
         i++
         continue
       }
+      // Repeated 0xFF bytes are legal marker-fill padding, not a marker
+      // whose next byte is a segment length.
+      while (i + 1 < buffer.length && buffer[i + 1] === 0xff) {
+        i++
+      }
+      if (i + 1 >= buffer.length) return null
       const marker = buffer[i + 1]
       // SOF markers: 0xC0-0xC3, 0xC5-0xC7, 0xC9-0xCB, 0xCD-0xCF (exclude
       // 0xC4/0xC8/0xCC which are DHT/DAC tables, not SOF).
@@ -1008,16 +1015,24 @@ function readJpegDimensions(
         (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 &&
           marker !== 0xc8 && marker !== 0xcc)
       if (isSof) {
+        if (i + 9 >= buffer.length) return null
         const height = buffer.readUInt16BE(i + 5)
         const width = buffer.readUInt16BE(i + 7)
         if (width > 0 && height > 0) return { width, height }
         return null
       }
-      // Skip non-SOF marker segments.
-      if (marker === 0xd8 || marker === 0xd9 || (marker >= 0xd0 && marker <= 0xd7)) {
+      // Standalone markers have no length field: TEM (0x01), RST0-RST7
+      // (0xD0-0xD7), SOI (0xD8), EOI (0xD9).
+      if (
+        marker === 0x01 ||
+        marker === 0xd8 ||
+        marker === 0xd9 ||
+        (marker >= 0xd0 && marker <= 0xd7)
+      ) {
         i += 2
         continue
       }
+      if (i + 3 >= buffer.length) return null
       const segLen = buffer.readUInt16BE(i + 2)
       if (segLen < 2) return null
       i += 2 + segLen
@@ -1073,18 +1088,28 @@ async function tryDownsampleToManyImageLimit(
 ): Promise<Buffer | null> {
   const g = globalThis as Record<string, unknown>
   // In browsers/Electron the Canvas APIs live on `document`, not globalThis;
-  // in some Node-canvas setups they are global. Resolve from either.
-  const doc = g.document as { createElement?: unknown } | undefined
-  const createElement =
-    typeof doc?.createElement === 'function'
-      ? doc.createElement
-      : (g.createElement as unknown)
+  // in some Node-canvas setups they are global. Resolve from either. Native
+  // DOM methods are brand-checked: they must be invoked with their owners,
+  // not extracted into unbound functions.
+  type CanvasLike = {
+    width: number
+    height: number
+    getContext: (type: string) => { drawImage: (...args: unknown[]) => void } | null
+    toDataURL: (type?: string) => string
+  }
+  const doc = g.document as { createElement?: (tag: string) => CanvasLike } | undefined
+  const documentCreateElement =
+    doc && typeof doc.createElement === 'function' ? doc.createElement.bind(doc) : null
+  const globalCreateElement =
+    typeof g.createElement === 'function'
+      ? (g.createElement as (tag: string, w?: number, h?: number) => CanvasLike)
+      : null
   const ImageCtor =
     typeof g.Image === 'function'
       ? g.Image
       : (doc as Record<string, unknown> | undefined)?.Image
   const createImageBitmap = g.createImageBitmap
-  if (typeof createElement !== 'function' || typeof ImageCtor !== 'function') {
+  if ((!documentCreateElement && !globalCreateElement) || typeof ImageCtor !== 'function') {
     return null
   }
 
@@ -1099,18 +1124,14 @@ async function tryDownsampleToManyImageLimit(
     const targetWidth = Math.max(1, Math.round(sourceWidth * scale))
     const targetHeight = Math.max(1, Math.round(sourceHeight * scale))
 
-    const canvas = (
-      createElement as (tag: string, w?: number, h?: number) => Record<
-        string,
-        unknown
-      >
-    )('canvas', targetWidth, targetHeight)
+    const canvas = documentCreateElement
+      ? documentCreateElement('canvas')
+      : globalCreateElement!('canvas', targetWidth, targetHeight)
     canvas.width = targetWidth
     canvas.height = targetHeight
 
-    const ctx = (canvas.getContext as (type: string) => Record<string, unknown> | null)(
-      '2d',
-    )
+    if (typeof canvas.getContext !== 'function') return null
+    const ctx = canvas.getContext('2d')
     if (!ctx || typeof ctx.drawImage !== 'function') return null
 
     const dataUrl = `data:${mediaType};base64,${buffer.toString('base64')}`
@@ -1144,18 +1165,13 @@ async function tryDownsampleToManyImageLimit(
       })
     }
 
-    ;(ctx.drawImage as (...args: unknown[]) => void)(
-      drawable,
-      0,
-      0,
-      targetWidth,
-      targetHeight,
-    )
+    ctx.drawImage(drawable, 0, 0, targetWidth, targetHeight)
 
     // Canvas can only emit PNG or JPEG; never GIF/WebP. Default unknown input
     // to PNG.
     const outType = mediaType === 'image/jpeg' ? 'image/jpeg' : 'image/png'
-    const outDataUrl = (canvas.toDataURL as (type?: string) => string)(outType)
+    if (typeof canvas.toDataURL !== 'function') return null
+    const outDataUrl = canvas.toDataURL(outType)
     const commaIndex = outDataUrl.indexOf(',')
     if (commaIndex === -1) return null
     return Buffer.from(outDataUrl.slice(commaIndex + 1), 'base64')
@@ -1165,14 +1181,10 @@ async function tryDownsampleToManyImageLimit(
 }
 
 /**
- * Shared many-image dimension-limit guard for the resize-failure fallback
- * paths (native processor crashed, or returned no metadata). The API enforces
- * a stricter 2000px bound when a request carries many images, so any path
- * that hands back a buffer unresized must still check this before returning.
- *
- * Returns null when the image is already within the limit (caller should
- * continue with its own logic). Otherwise downsamples via Canvas and returns
- * the replacement buffer, or throws ImageResizeError if that isn't possible.
+ * Shared many-image dimension-limit helper for the resize-failure fallback
+ * paths (native processor crashed, or returned no metadata). When Canvas is
+ * available, downsample images over the 2000px many-image bound. When it is
+ * not, return null so the caller can keep an in-budget single-image paste.
  */
 async function enforceManyImageDimensionLimit(
   imageBuffer: Buffer,
@@ -1221,12 +1233,10 @@ async function enforceManyImageDimensionLimit(
       return { buffer: downsampled, mediaType: downsampledMediaType }
     }
   }
-  // Could not safely downsample without the native processor — reject rather
-  // than returning an oversized image that would fail later.
-  throw new ImageResizeError(
-    `Unable to resize image — dimensions exceed the many-image limit (${IMAGE_MANY_IMAGE_MAX_WIDTH}x${IMAGE_MANY_IMAGE_MAX_HEIGHT}px) and image processing failed. ` +
-      `Please resize the image to reduce its pixel dimensions.`,
-  )
+  // No Canvas (or downsample still over the payload budget): do not reject.
+  // A compact 4K screenshot is a valid single-image paste; throwing here is
+  // swallowed by getImageFromClipboard() as "No image found".
+  return null
 }
 
 /**

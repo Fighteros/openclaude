@@ -60,9 +60,66 @@ function makePngBuffer(width = 1920, height = 1080): Buffer {
   return buf
 }
 
-// JPEG with a single SOF2 marker carrying the frame dimensions. The parser
-// scans markers, so the byte positions of SOF itself don't matter — only the
-// height (readUInt16BE at offset+5) and width (readUInt16BE at offset+7).
+// JPEG with legal marker-fill 0xFF bytes and a standalone TEM (FF01) before SOF.
+function makeJpegBufferWithFillAndTem(width = 1500, height = 1000): Buffer {
+  // SOI, 0xFF fill bytes, standalone TEM (FF01), then SOF0 with dimensions.
+  const buf = Buffer.alloc(40)
+  buf[0] = 0xff
+  buf[1] = 0xd8
+  buf[2] = 0xff
+  buf[3] = 0xff // fill
+  buf[4] = 0xff // fill
+  buf[5] = 0x01 // TEM
+  buf[6] = 0xff
+  buf[7] = 0xc0
+  buf.writeUInt16BE(17, 8)
+  buf[10] = 8
+  buf.writeUInt16BE(height, 11)
+  buf.writeUInt16BE(width, 13)
+  return buf
+}
+
+function installBrandCheckingDocument(dataUrl: string): { restore: () => void } {
+  const savedDocument = (globalThis as any).document
+  const canvas = {
+    width: 0,
+    height: 0,
+    getContext(this: unknown) {
+      if (this !== canvas) {
+        throw new TypeError('Illegal invocation')
+      }
+      return { drawImage() {} }
+    },
+    toDataURL(this: unknown) {
+      if (this !== canvas) {
+        throw new TypeError('Illegal invocation')
+      }
+      return dataUrl
+    },
+  }
+  const documentObj = {
+    createElement(this: unknown, _tag: string) {
+      if (this !== documentObj) {
+        throw new TypeError('Illegal invocation')
+      }
+      return canvas
+    },
+    Image: class {
+      onload: (() => void) | null = null
+      onerror: ((e: unknown) => void) | null = null
+      set src(_v: string) {
+        queueMicrotask(() => this.onload?.())
+      }
+    },
+  }
+  ;(globalThis as any).document = documentObj
+  return {
+    restore() {
+      ;(globalThis as any).document = savedDocument
+    },
+  }
+}
+
 function makeJpegBuffer(width = 3840, height = 2160): Buffer {
   const buf = Buffer.alloc(32)
   buf[0] = 0xff
@@ -166,26 +223,25 @@ describe('maybeResizeAndDownsampleImageBuffer — #1964 fixes', () => {
     expect(result.dimensions).toBeUndefined()
   })
 
-  test('metadata-less + compact many-image-oversized PNG: rejected without Canvas', async () => {
+  test('metadata-less + compact many-image-oversized PNG: allowed through without Canvas', async () => {
     mock.module(imageProcessorPath, () => ({
       ...actualImageProcessor,
       getImageProcessor: () => Promise.resolve(sharpFactory),
     }))
-    const { maybeResizeAndDownsampleImageBuffer, ImageResizeError } =
-      await loadResizerModule()
+    const { maybeResizeAndDownsampleImageBuffer } = await loadResizerModule()
 
     mockMetadata = undefined
-    // Compact in bytes but 3840x2160 pixels — must not slip through the
-    // metadata-less branch just because it's under IMAGE_TARGET_RAW_SIZE.
+    // Compact in bytes but 3840x2160 pixels. Without Canvas, the Windows CLI
+    // must still attach this screenshot rather than recreating #1964.
     const imageBuffer = makePngBuffer(3840, 2160)
 
-    await expect(
-      maybeResizeAndDownsampleImageBuffer(
-        imageBuffer,
-        imageBuffer.length,
-        'png',
-      ),
-    ).rejects.toBeInstanceOf(ImageResizeError)
+    const result = await maybeResizeAndDownsampleImageBuffer(
+      imageBuffer,
+      imageBuffer.length,
+      'png',
+    )
+    expect(result.buffer.equals(imageBuffer)).toBe(true)
+    expect(result.mediaType).toBe('png')
   })
 
   test('metadata-less + compact many-image-oversized PNG: downsampled via Canvas when available', async () => {
@@ -199,22 +255,7 @@ describe('maybeResizeAndDownsampleImageBuffer — #1964 fixes', () => {
 
     const downsampledBytes = Buffer.from('downsampled-pixels')
     const dataUrl = `data:image/png;base64,${downsampledBytes.toString('base64')}`
-    const savedDocument = (globalThis as any).document
-    ;(globalThis as any).document = {
-      createElement: (_tag: string) => ({
-        width: 0,
-        height: 0,
-        getContext: () => ({ drawImage() {} }),
-        toDataURL: () => dataUrl,
-      }),
-      Image: class {
-        onload: (() => void) | null = null
-        onerror: ((e: unknown) => void) | null = null
-        set src(_v: string) {
-          queueMicrotask(() => this.onload?.())
-        }
-      },
-    }
+    const canvas = installBrandCheckingDocument(dataUrl)
 
     const imageBuffer = makePngBuffer(3840, 2160)
     try {
@@ -225,7 +266,7 @@ describe('maybeResizeAndDownsampleImageBuffer — #1964 fixes', () => {
       )
       expect(result.buffer.equals(downsampledBytes)).toBe(true)
     } finally {
-      ;(globalThis as any).document = savedDocument
+      canvas.restore()
     }
   })
 
@@ -358,27 +399,26 @@ describe('maybeResizeAndDownsampleImageBuffer — #1964 fixes', () => {
     ).rejects.toBeInstanceOf(ImageResizeError)
   })
 
-  test('catch block: image over 2000px many-image limit is rejected when downsample unavailable', async () => {
+  test('catch block: image over 2000px is allowed through when downsample unavailable', async () => {
     mock.module(imageProcessorPath, () => ({
       ...actualImageProcessor,
       getImageProcessor: () => Promise.resolve(() => {
         throw new Error('image_processor_napi crashed')
       }),
     }))
-    const { maybeResizeAndDownsampleImageBuffer, ImageResizeError } =
-      await loadResizerModule()
+    const { maybeResizeAndDownsampleImageBuffer } = await loadResizerModule()
 
-    // 3840x2160 PNG, small byte size -> base64 well under 5MB, but the
-    // 2000px many-image dimension limit is exceeded.
+    // 3840x2160 PNG, small byte size -> base64 well under 5MB. The many-image
+    // 2000px bound is not a clipboard admission limit on the no-Canvas path.
     const imageBuffer = makePngBuffer(3840, 2160)
 
-    await expect(
-      maybeResizeAndDownsampleImageBuffer(
-        imageBuffer,
-        imageBuffer.length,
-        'png',
-      ),
-    ).rejects.toBeInstanceOf(ImageResizeError)
+    const result = await maybeResizeAndDownsampleImageBuffer(
+      imageBuffer,
+      imageBuffer.length,
+      'png',
+    )
+    expect(result.buffer.equals(imageBuffer)).toBe(true)
+    expect(result.mediaType).toBe('png')
   })
 
   test('catch block: image over 2000px is downsampled via Canvas fallback when available', async () => {
@@ -390,30 +430,9 @@ describe('maybeResizeAndDownsampleImageBuffer — #1964 fixes', () => {
     }))
     const { maybeResizeAndDownsampleImageBuffer } = await loadResizerModule()
 
-    // Fake Canvas so tryDownsampleToManyImageLimit succeeds. Mirror the
-    // browser/Electron shape the production code resolves first: a `document`
-    // object exposing createElement/Image, with Image firing onload.
     const downsampledBytes = Buffer.from('downsampled-pixels')
     const dataUrl = `data:image/png;base64,${downsampledBytes.toString('base64')}`
-    const savedDocument = (globalThis as any).document
-    ;(globalThis as any).document = {
-      createElement: (_tag: string) => ({
-        width: 0,
-        height: 0,
-        getContext: () => ({ drawImage() {} }),
-        toDataURL: () => dataUrl,
-      }),
-      Image: class {
-        onload: (() => void) | null = null
-        onerror: ((e: unknown) => void) | null = null
-        // Fires onload from the `src` setter (not the constructor) so this
-        // test verifies handlers are installed before `src` is assigned —
-        // matching a real DOM Image, whose constructor takes no URL argument.
-        set src(_v: string) {
-          queueMicrotask(() => this.onload?.())
-        }
-      },
-    }
+    const canvas = installBrandCheckingDocument(dataUrl)
 
     const imageBuffer = makePngBuffer(3840, 2160)
     try {
@@ -426,41 +445,37 @@ describe('maybeResizeAndDownsampleImageBuffer — #1964 fixes', () => {
       expect(result.buffer.equals(imageBuffer)).toBe(false)
       expect(result.buffer.equals(downsampledBytes)).toBe(true)
     } finally {
-      ;(globalThis as any).document = savedDocument
+      canvas.restore()
     }
   })
 
-  test('catch block: oversized non-PNG (WEBP/JPEG/GIF) is still rejected when downsample unavailable', async () => {
+  test('catch block: oversized non-PNG (WEBP/JPEG/GIF) is allowed through when downsample unavailable', async () => {
     mock.module(imageProcessorPath, () => ({
       ...actualImageProcessor,
       getImageProcessor: () => Promise.resolve(() => {
         throw new Error('image_processor_napi crashed')
       }),
     }))
-    const { maybeResizeAndDownsampleImageBuffer, ImageResizeError } =
-      await loadResizerModule()
+    const { maybeResizeAndDownsampleImageBuffer } = await loadResizerModule()
 
-    // Each fixture exceeds 2000px and is base64-small, so the guard must fire
-    // even for these formats (regression for the JPEG/GIF/WebP false-negative).
     const fixtures: Array<[Buffer, string]> = [
       [makeJpegBuffer(3840, 2160), 'jpeg'],
       [makeWebpLossyBuffer(3800, 2100), 'webp'],
       [makeGifBuffer(3000, 2500), 'gif'],
     ]
     for (const [imageBuffer, ext] of fixtures) {
-      await expect(
-        maybeResizeAndDownsampleImageBuffer(
-          imageBuffer,
-          imageBuffer.length,
-          ext,
-        ),
-      ).rejects.toBeInstanceOf(ImageResizeError)
+      const result = await maybeResizeAndDownsampleImageBuffer(
+        imageBuffer,
+        imageBuffer.length,
+        ext,
+      )
+      expect(result.buffer.equals(imageBuffer)).toBe(true)
     }
   })
 
   test('readImageDimensions: parses real WebP VP8/VP8L byte offsets', async () => {
     const { readImageDimensions } = await loadResizerModule()
-    // Oversized lossy + lossless are rejected by the many-image guard...
+    // Parsed dimensions for oversized and in-limit WebP fixtures.
     expect(readImageDimensions(makeWebpLossyBuffer(3800, 2100))).toEqual({
       width: 3800,
       height: 2100,
@@ -526,23 +541,21 @@ describe('maybeResizeAndDownsampleImageBuffer — #1964 fixes', () => {
     expect(result.buffer.equals(imageBuffer)).toBe(true)
   })
 
-  test('catch block: oversized VP8X extended WebP is rejected when downsample unavailable', async () => {
+  test('catch block: oversized VP8X extended WebP is allowed through when downsample unavailable', async () => {
     mock.module(imageProcessorPath, () => ({
       ...actualImageProcessor,
       getImageProcessor: () => Promise.resolve(() => {
         throw new Error('image_processor_napi crashed')
       }),
     }))
-    const { maybeResizeAndDownsampleImageBuffer, ImageResizeError } =
-      await loadResizerModule()
+    const { maybeResizeAndDownsampleImageBuffer } = await loadResizerModule()
     const imageBuffer = makeWebpExtendedBuffer(3840, 2160)
-    await expect(
-      maybeResizeAndDownsampleImageBuffer(
-        imageBuffer,
-        imageBuffer.length,
-        'webp',
-      ),
-    ).rejects.toBeInstanceOf(ImageResizeError)
+    const result = await maybeResizeAndDownsampleImageBuffer(
+      imageBuffer,
+      imageBuffer.length,
+      'webp',
+    )
+    expect(result.buffer.equals(imageBuffer)).toBe(true)
   })
 
   test('catch block: in-limit WEBP (<=2000px) is allowed through unchanged', async () => {
@@ -562,6 +575,40 @@ describe('maybeResizeAndDownsampleImageBuffer — #1964 fixes', () => {
     )
     expect(result.buffer).toBeInstanceOf(Buffer)
     expect(result.buffer.equals(imageBuffer)).toBe(true)
+  })
+
+  test('readImageDimensions: JPEG fill bytes and TEM markers do not hide SOF', async () => {
+    const { readImageDimensions } = await loadResizerModule()
+    expect(readImageDimensions(makeJpegBufferWithFillAndTem(1500, 1000))).toEqual(
+      {
+        width: 1500,
+        height: 1000,
+      },
+    )
+    expect(readImageDimensions(makeJpegBufferWithFillAndTem(3840, 2160))).toEqual(
+      {
+        width: 3840,
+        height: 2160,
+      },
+    )
+  })
+
+  test('catch block: in-limit JPEG with fill/TEM padding is allowed through', async () => {
+    mock.module(imageProcessorPath, () => ({
+      ...actualImageProcessor,
+      getImageProcessor: () => Promise.resolve(() => {
+        throw new Error('image_processor_napi crashed')
+      }),
+    }))
+    const { maybeResizeAndDownsampleImageBuffer } = await loadResizerModule()
+    const imageBuffer = makeJpegBufferWithFillAndTem(1500, 1000)
+    const result = await maybeResizeAndDownsampleImageBuffer(
+      imageBuffer,
+      imageBuffer.length,
+      'jpeg',
+    )
+    expect(result.buffer.equals(imageBuffer)).toBe(true)
+    expect(result.mediaType).toBe('jpeg')
   })
 
   test('happy path: small in-limit PNG returns dimensions', async () => {
