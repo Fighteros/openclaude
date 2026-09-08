@@ -6,6 +6,7 @@ import { useKeybinding, useKeybindings } from '../../keybindings/useKeybinding.j
 import type { PastedContent } from '../../utils/config.js';
 import { getImageFromClipboard } from '../../utils/imagePaste.js';
 import type { ImageDimensions } from '../../utils/imageResizer.js';
+import { logError } from '../../utils/log.js';
 import { ClickableImageRef } from '../ClickableImageRef.js';
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';
 import { Byline } from '../design-system/Byline.js';
@@ -181,6 +182,8 @@ export function SelectInputOption(t0) {
         if (imageData) {
           onImagePaste(imageData.base64, imageData.mediaType, undefined, imageData.dimensions);
         }
+      }).catch(error => {
+        logError(error as Error);
       });
     };
     $[16] = onImagePaste;

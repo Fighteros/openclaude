@@ -4,6 +4,7 @@ import type {
 } from '@anthropic-ai/sdk/resources/messages.mjs'
 import {
   API_IMAGE_MAX_BASE64_SIZE,
+  IMAGE_API_MAX_EDGE,
   IMAGE_MANY_IMAGE_MAX_HEIGHT,
   IMAGE_MANY_IMAGE_MAX_WIDTH,
   IMAGE_MAX_HEIGHT,
@@ -424,6 +425,13 @@ export async function maybeResizeAndDownsampleImageBuffer(
       },
     }
   } catch (error) {
+    // Intentional limit failures (empty file, over-budget compression, API
+    // hard 8000px edge) must not be treated as a processor crash. The catch
+    // path would otherwise log them as resize-failed and may passthrough.
+    if (error instanceof ImageResizeError) {
+      throw error
+    }
+
     // Log the error and emit analytics event
     logError(error as Error)
     const errorType = classifyImageError(error)
@@ -1109,7 +1117,15 @@ async function tryDownsampleToManyImageLimit(
       ? g.Image
       : (doc as Record<string, unknown> | undefined)?.Image
   const createImageBitmap = g.createImageBitmap
-  if ((!documentCreateElement && !globalCreateElement) || typeof ImageCtor !== 'function') {
+  // createImageBitmap needs a Blob from fetch(dataUrl). Require both APIs
+  // before selecting that path; otherwise a missing fetch throws, the outer
+  // catch returns null, and a working Image decoder never runs.
+  const canUseBitmap =
+    typeof createImageBitmap === 'function' && typeof g.fetch === 'function'
+  if (
+    (!documentCreateElement && !globalCreateElement) ||
+    (!canUseBitmap && typeof ImageCtor !== 'function')
+  ) {
     return null
   }
 
@@ -1141,14 +1157,20 @@ async function tryDownsampleToManyImageLimit(
     // prefer createImageBitmap (resolves already-decoded) and otherwise await
     // the Image `load` event.
     let drawable: unknown
-    if (typeof createImageBitmap === 'function') {
-      const blob = await (g.fetch as (url: string) => Promise<{ blob(): Promise<unknown> }>)(
-        dataUrl,
-      ).then((r) => r.blob())
-      drawable = await (
-        createImageBitmap as (input: unknown) => Promise<unknown>
-      )(blob)
-    } else {
+    if (canUseBitmap) {
+      try {
+        const blob = await (
+          g.fetch as (url: string) => Promise<{ blob(): Promise<unknown> }>
+        )(dataUrl).then((r) => r.blob())
+        drawable = await (
+          createImageBitmap as (input: unknown) => Promise<unknown>
+        )(blob)
+      } catch {
+        drawable = undefined
+      }
+    }
+    if (drawable == null) {
+      if (typeof ImageCtor !== 'function') return null
       drawable = await new Promise((resolve, reject) => {
         // The DOM `Image` constructor takes optional width/height, not a URL —
         // passing `dataUrl` as the first arg silently does nothing. Handlers
@@ -1233,9 +1255,22 @@ async function enforceManyImageDimensionLimit(
       return { buffer: downsampled, mediaType: downsampledMediaType }
     }
   }
-  // No Canvas (or downsample still over the payload budget): do not reject.
-  // A compact 4K screenshot is a valid single-image paste; throwing here is
-  // swallowed by getImageFromClipboard() as "No image found".
+  // The API hard-rejects any image whose long edge exceeds 8000px. That is
+  // distinct from the 2000px many-image bound: a compact 4K screenshot
+  // (3840px) must still passthrough when Canvas is unavailable (#1964).
+  if (
+    rawDims &&
+    (rawDims.width > IMAGE_API_MAX_EDGE || rawDims.height > IMAGE_API_MAX_EDGE)
+  ) {
+    throw new ImageResizeError(
+      `Unable to resize image — dimensions exceed the ${IMAGE_API_MAX_EDGE}x${IMAGE_API_MAX_EDGE}px API limit and image processing failed. ` +
+        `Please resize the image to reduce its pixel dimensions.`,
+    )
+  }
+  // No Canvas (or downsample still over the payload budget): do not reject
+  // an in-budget single image under the API hard edge. Throwing the 2000px
+  // many-image rule here is swallowed by getImageFromClipboard() as
+  // "No image found".
   return null
 }
 

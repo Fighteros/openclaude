@@ -80,7 +80,16 @@ function makeJpegBufferWithFillAndTem(width = 1500, height = 1000): Buffer {
 }
 
 function installBrandCheckingDocument(dataUrl: string): { restore: () => void } {
-  const savedDocument = (globalThis as any).document
+  const g = globalThis as Record<string, unknown>
+  const hadDocument = Object.prototype.hasOwnProperty.call(g, 'document')
+  const savedDocument = g.document
+  const hadImage = Object.prototype.hasOwnProperty.call(g, 'Image')
+  const savedImage = g.Image
+  const hadCreateImageBitmap = Object.prototype.hasOwnProperty.call(
+    g,
+    'createImageBitmap',
+  )
+  const savedCreateImageBitmap = g.createImageBitmap
   const canvas = {
     width: 0,
     height: 0,
@@ -112,10 +121,29 @@ function installBrandCheckingDocument(dataUrl: string): { restore: () => void } 
       }
     },
   }
-  ;(globalThis as any).document = documentObj
+  // Production prefers globalThis.Image, then document.Image, and
+  // createImageBitmap over Image. Clear host globals so this mock is the
+  // decoder that actually runs.
+  delete g.Image
+  delete g.createImageBitmap
+  g.document = documentObj
   return {
     restore() {
-      ;(globalThis as any).document = savedDocument
+      if (hadDocument) {
+        g.document = savedDocument
+      } else {
+        delete g.document
+      }
+      if (hadImage) {
+        g.Image = savedImage
+      } else {
+        delete g.Image
+      }
+      if (hadCreateImageBitmap) {
+        g.createImageBitmap = savedCreateImageBitmap
+      } else {
+        delete g.createImageBitmap
+      }
     },
   }
 }
@@ -421,6 +449,43 @@ describe('maybeResizeAndDownsampleImageBuffer — #1964 fixes', () => {
     expect(result.mediaType).toBe('png')
   })
 
+  test('catch block: image at 8000px API edge is allowed through when downsample unavailable', async () => {
+    mock.module(imageProcessorPath, () => ({
+      ...actualImageProcessor,
+      getImageProcessor: () => Promise.resolve(() => {
+        throw new Error('image_processor_napi crashed')
+      }),
+    }))
+    const { maybeResizeAndDownsampleImageBuffer } = await loadResizerModule()
+    const imageBuffer = makePngBuffer(8000, 100)
+    const result = await maybeResizeAndDownsampleImageBuffer(
+      imageBuffer,
+      imageBuffer.length,
+      'png',
+    )
+    expect(result.buffer.equals(imageBuffer)).toBe(true)
+    expect(result.mediaType).toBe('png')
+  })
+
+  test('catch block: image over the 8000px API edge is rejected when downsample unavailable', async () => {
+    mock.module(imageProcessorPath, () => ({
+      ...actualImageProcessor,
+      getImageProcessor: () => Promise.resolve(() => {
+        throw new Error('image_processor_napi crashed')
+      }),
+    }))
+    const { maybeResizeAndDownsampleImageBuffer, ImageResizeError } =
+      await loadResizerModule()
+    const imageBuffer = makePngBuffer(8001, 100)
+    await expect(
+      maybeResizeAndDownsampleImageBuffer(
+        imageBuffer,
+        imageBuffer.length,
+        'png',
+      ),
+    ).rejects.toBeInstanceOf(ImageResizeError)
+  })
+
   test('catch block: image over 2000px is downsampled via Canvas fallback when available', async () => {
     mock.module(imageProcessorPath, () => ({
       ...actualImageProcessor,
@@ -444,8 +509,87 @@ describe('maybeResizeAndDownsampleImageBuffer — #1964 fixes', () => {
       expect(result.buffer).toBeInstanceOf(Buffer)
       expect(result.buffer.equals(imageBuffer)).toBe(false)
       expect(result.buffer.equals(downsampledBytes)).toBe(true)
+      expect(result.mediaType).toBe('png')
     } finally {
       canvas.restore()
+    }
+  })
+
+  test('catch block: createImageBitmap without fetch still downsamples via Image', async () => {
+    mock.module(imageProcessorPath, () => ({
+      ...actualImageProcessor,
+      getImageProcessor: () => Promise.resolve(() => {
+        throw new Error('image_processor_napi crashed')
+      }),
+    }))
+    const { maybeResizeAndDownsampleImageBuffer } = await loadResizerModule()
+
+    const downsampledBytes = Buffer.from('downsampled-via-image')
+    const dataUrl = `data:image/png;base64,${downsampledBytes.toString('base64')}`
+    const g = globalThis as Record<string, unknown>
+    const hadFetch = Object.prototype.hasOwnProperty.call(g, 'fetch')
+    const savedFetch = g.fetch
+    const canvas = installBrandCheckingDocument(dataUrl)
+    g.createImageBitmap = async () => {
+      throw new Error('bitmap should not run without fetch')
+    }
+    delete g.fetch
+    const imageBuffer = makePngBuffer(3840, 2160)
+    try {
+      const result = await maybeResizeAndDownsampleImageBuffer(
+        imageBuffer,
+        imageBuffer.length,
+        'png',
+      )
+      expect(result.buffer.equals(downsampledBytes)).toBe(true)
+      expect(result.mediaType).toBe('png')
+    } finally {
+      canvas.restore()
+      if (hadFetch) {
+        g.fetch = savedFetch
+      } else {
+        delete g.fetch
+      }
+    }
+  })
+
+  test('catch block: createImageBitmap/fetch failure falls through to Image downsample', async () => {
+    mock.module(imageProcessorPath, () => ({
+      ...actualImageProcessor,
+      getImageProcessor: () => Promise.resolve(() => {
+        throw new Error('image_processor_napi crashed')
+      }),
+    }))
+    const { maybeResizeAndDownsampleImageBuffer } = await loadResizerModule()
+
+    const downsampledBytes = Buffer.from('downsampled-after-bitmap-fail')
+    const dataUrl = `data:image/png;base64,${downsampledBytes.toString('base64')}`
+    const g = globalThis as Record<string, unknown>
+    const hadFetch = Object.prototype.hasOwnProperty.call(g, 'fetch')
+    const savedFetch = g.fetch
+    const canvas = installBrandCheckingDocument(dataUrl)
+    g.createImageBitmap = async () => {
+      throw new Error('bitmap failed')
+    }
+    g.fetch = async () => {
+      throw new Error('fetch failed')
+    }
+    const imageBuffer = makePngBuffer(3840, 2160)
+    try {
+      const result = await maybeResizeAndDownsampleImageBuffer(
+        imageBuffer,
+        imageBuffer.length,
+        'png',
+      )
+      expect(result.buffer.equals(downsampledBytes)).toBe(true)
+      expect(result.mediaType).toBe('png')
+    } finally {
+      canvas.restore()
+      if (hadFetch) {
+        g.fetch = savedFetch
+      } else {
+        delete g.fetch
+      }
     }
   })
 
@@ -470,6 +614,7 @@ describe('maybeResizeAndDownsampleImageBuffer — #1964 fixes', () => {
         ext,
       )
       expect(result.buffer.equals(imageBuffer)).toBe(true)
+      expect(result.mediaType).toBe(ext)
     }
   })
 

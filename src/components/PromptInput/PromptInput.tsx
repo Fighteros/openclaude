@@ -69,7 +69,7 @@ import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js';
 import type { PromptInputHelpers } from '../../utils/handlePromptSubmit.js';
 import { extractDraggedFilePaths } from '../../utils/dragDropPaths.js';
 import { getImageFromClipboard, PASTE_THRESHOLD } from '../../utils/imagePaste.js';
-import type { ImageDimensions } from '../../utils/imageResizer.js';
+import { ImageResizeError, type ImageDimensions } from '../../utils/imageResizer.js';
 import { cacheImagePath, storeImage } from '../../utils/imageStore.js';
 import { isMacosOptionChar, MACOS_OPTION_SPECIAL_CHARS } from '../../utils/keyboardShortcuts.js';
 import { logError } from '../../utils/log.js';
@@ -1738,6 +1738,14 @@ function PromptInput({
           timeoutMs: 1000
         });
       }
+    }).catch(error => {
+      const message = error instanceof ImageResizeError ? error.message : 'Unable to paste image from clipboard.';
+      addNotification({
+        key: 'image-paste-failed',
+        text: message,
+        priority: 'immediate',
+        timeoutMs: 5000
+      });
     });
   }, [addNotification, onImagePaste]);
 

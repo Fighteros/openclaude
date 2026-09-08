@@ -55,6 +55,16 @@ export const IMAGE_MAX_HEIGHT = 1568
 export const IMAGE_MANY_IMAGE_MAX_WIDTH = 2000
 export const IMAGE_MANY_IMAGE_MAX_HEIGHT = 2000
 
+/**
+ * Absolute per-image edge limit enforced by the Claude API. Images with any
+ * side above this value are rejected with `invalid_request_error` rather than
+ * downscaled. This is distinct from IMAGE_MANY_IMAGE_MAX_* (2000px, only when
+ * a request carries many images) and from IMAGE_MAX_* (1568px client target).
+ *
+ * Source: https://platform.claude.com/docs/en/build-with-claude/vision
+ */
+export const IMAGE_API_MAX_EDGE = 8000
+
 // =============================================================================
 // PDF LIMITS
 // =============================================================================

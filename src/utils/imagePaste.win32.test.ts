@@ -211,4 +211,46 @@ describe('Windows clipboard image handling', () => {
     const deleteCall = execa.mock.calls[2] as unknown as ExecaCall | undefined
     expect(deleteCall?.[0]).toContain('del /f')
   })
+
+  test('getImageFromClipboard does not hide ImageResizeError as a missing clipboard image', async () => {
+    setPlatform('win32')
+    const tempDir = mkdtempSync(join(tmpdir(), 'openclaude-image-paste-'))
+    tempDirs.push(tempDir)
+    process.env.CLAUDE_CODE_TMPDIR = tempDir
+    const screenshotPath = join(tempDir, 'claude_cli_latest_screenshot.png')
+    const imageBuffer = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+      'base64',
+    )
+    const execa = mock(async (command: string) => {
+      if (command.includes('Clipboard]::GetImage()')) {
+        writeFileSync(screenshotPath, imageBuffer)
+      }
+      return {
+        exitCode: 0,
+        stdout: 'False\r\n',
+        stderr: '',
+      }
+    })
+
+    actualImageResizerModule ??= await import(
+      `./imageResizer.js?actual=${Date.now()}-${Math.random()}`
+    )
+    const ImageResizeError = actualImageResizerModule!.ImageResizeError
+    const maybeResizeAndDownsampleImageBuffer = mock(async () => {
+      throw new ImageResizeError(
+        'Unable to resize image — dimensions exceed the 8000x8000px API limit and image processing failed. Please resize the image to reduce its pixel dimensions.',
+      )
+    })
+    mock.module('execa', () => ({ execa }))
+    mock.module('./imageResizer.js', () => ({
+      ...actualImageResizerModule!,
+      maybeResizeAndDownsampleImageBuffer,
+    }))
+
+    const { getImageFromClipboard } = await importImagePaste()
+    await expect(getImageFromClipboard()).rejects.toBeInstanceOf(
+      ImageResizeError,
+    )
+  })
 })

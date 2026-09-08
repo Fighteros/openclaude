@@ -14,6 +14,7 @@ import { execFileNoThrowWithCwd } from './execFileNoThrow.js'
 import { getFsImplementation } from './fsOperations.js'
 import {
   detectImageFormatFromBase64,
+  ImageResizeError,
   type ImageDimensions,
   maybeResizeAndDownsampleImageBuffer,
 } from './imageResizer.js'
@@ -225,6 +226,9 @@ export async function getImageFromClipboard(): Promise<ImageWithDimensions | nul
         },
       }
     } catch (e) {
+      if (e instanceof ImageResizeError) {
+        throw e
+      }
       logError(e as Error)
       // Fall through to osascript fallback.
     }
@@ -285,7 +289,12 @@ export async function getImageFromClipboard(): Promise<ImageWithDimensions | nul
       mediaType,
       dimensions: resized.dimensions,
     }
-  } catch {
+  } catch (e) {
+    // A real resize/admission failure is not "clipboard is empty". Swallowing
+    // ImageResizeError here is what turned #1964 into "No image found".
+    if (e instanceof ImageResizeError) {
+      throw e
+    }
     return null
   }
 }
