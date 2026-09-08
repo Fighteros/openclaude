@@ -336,7 +336,7 @@ Advanced and source-build guides:
 - **Tool-driven coding workflows**: Bash, file read/write/edit, grep, glob, agents, tasks, MCP, and slash commands
 - **Streaming responses**: Real-time token output and tool progress
 - **Tool calling**: Multi-step tool loops with model calls, tool execution, and follow-up responses
-- **Images**: URL and base64 image inputs for providers that support vision
+- **Images**: URL and base64 image inputs for providers that support vision. Paste from the clipboard with Ctrl+V (Alt+V on Windows). 1080p/4K screenshots still attach. If processing fails and the image is over the 5MB payload limit or the 8000px API edge, the prompt shows that error instead of "No image found".
 - **Provider profiles**: Guided setup plus saved user-level provider profile support
 - **Local and remote model backends**: Cloud APIs, local servers, and Apple Silicon local inference
 - **Codebase intelligence (repo map)**: Structural map of the repository ranked by PageRank importance, auto-injected into context when the `REPO_MAP` flag is enabled or the `REPO_MAP` environment variable is set. Inspect with `/repomap` (2048-token default). See [docs/repo-map.md](docs/repo-map.md) for details.
