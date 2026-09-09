@@ -43,6 +43,7 @@ import {
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import { formatFileSize } from '../../utils/format.js'
 import { ImageResizeError } from '../../utils/imageResizer.js'
+import { RequestImageDimensionsError } from '../../utils/requestImageValidation.js'
 import { ImageSizeError } from '../../utils/imageValidation.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -793,7 +794,9 @@ export function getAssistantMessageFromError(
   // but a generic message for SDK users (non-interactive mode)
   if (error instanceof ImageSizeError || error instanceof ImageResizeError) {
     return createAssistantAPIErrorMessage({
-      content: getImageTooLargeErrorMessage(),
+      content: error instanceof RequestImageDimensionsError
+        ? error.message
+        : getImageTooLargeErrorMessage(),
     })
   }
 

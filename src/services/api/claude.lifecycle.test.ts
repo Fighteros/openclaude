@@ -555,6 +555,46 @@ const describeLifecycle = runInProviderIsolatedChild
   : describe
 
 describeLifecycle('Claude API lifecycle tracking', () => {
+  test.each([20, 21])('checks %i retained images before dispatch and yields resize errors', async count => {
+    setClientTestEnv()
+    const buffer = Buffer.alloc(24)
+    buffer.write('89504e470d0a1a0a', 'hex')
+    buffer.writeUInt32BE(3840, 16)
+    buffer.writeUInt32BE(2160, 20)
+    let requests = 0
+    const events: unknown[] = []
+    const generator = queryModelWithStreaming({
+      messages: [{
+        type: 'user',
+        uuid: '00000000-0000-0000-0000-000000000019',
+        timestamp: '2026-08-21T00:00:00.000Z',
+        message: {
+          role: 'user',
+          content: Array.from({ length: count }, () => ({
+            type: 'image',
+            source: { type: 'base64', media_type: 'image/png', data: buffer.toString('base64') },
+          })),
+        },
+      } as Message],
+      systemPrompt: asSystemPrompt(['stable system prompt']),
+      thinkingConfig: { type: 'disabled' },
+      tools: [],
+      signal: new AbortController().signal,
+      options: {
+        ...makeOptions(new QueryLifecycleOperationTracker()),
+        fetchOverride: async () => {
+          requests++
+          return makeErrorResponse(400, 'captured request')
+        },
+      },
+    })
+    for await (const event of generator) events.push(event)
+    expect(requests).toBe(count === 20 ? 1 : 0)
+    if (count === 21) {
+      expect(JSON.stringify(events)).toContain('Resize the image before sending')
+    }
+  })
+
   for (const [label, envKey, envValue, ambientAuth] of [
     ['remote', 'CLAUDE_CODE_REMOTE', '1', 'api-key'],
     [

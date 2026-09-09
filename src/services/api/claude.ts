@@ -21,6 +21,10 @@ import type { TextBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import type { Stream } from '@anthropic-ai/sdk/streaming.mjs'
 import { randomUUID } from 'crypto'
 import {
+  prepareImagesForAnthropicRequest,
+  usesAnthropicImageLimits,
+} from '../../utils/requestImageValidation.js'
+import {
   getAPIProvider,
   isFirstPartyAnthropicBaseUrl,
   isGithubNativeAnthropicMode,
@@ -1979,6 +1983,14 @@ async function* queryModel(
   let apiQueryLogged = false
 
   try {
+    if (usesAnthropicImageLimits({
+      apiProvider: getAPIProvider(),
+      isFirstPartyBaseUrl: isFirstPartyAnthropicBaseUrl(),
+      isGithubNativeAnthropic: isGithubNativeAnthropicMode(options.model),
+      hasProviderOverride: Boolean(options.providerOverride),
+    })) {
+      messagesForAPI = await prepareImagesForAnthropicRequest(messagesForAPI)
+    }
     queryCheckpoint('query_client_creation_start')
     const generator = withRetry<Stream<BetaRawMessageStreamEvent> | null>(
       () =>
