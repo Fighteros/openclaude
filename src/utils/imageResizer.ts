@@ -446,21 +446,6 @@ export async function maybeResizeAndDownsampleImageBuffer(
     const detected = detectImageFormatFromBuffer(imageBuffer)
     const normalizedExt = detected.slice(6) // Remove 'image/' prefix
 
-    // Check the API-hard edge before payload branching. Otherwise an image
-    // that exceeds both limits skips the many-image helper below and reports
-    // the unrelated 1568px client resize target instead of the 8000px API cap.
-    const fallbackDimensions = readImageDimensions(imageBuffer)
-    if (
-      fallbackDimensions &&
-      (fallbackDimensions.width > IMAGE_API_MAX_EDGE ||
-        fallbackDimensions.height > IMAGE_API_MAX_EDGE)
-    ) {
-      throw new ImageResizeError(
-        `Unable to resize image — dimensions exceed the ${IMAGE_API_MAX_EDGE}x${IMAGE_API_MAX_EDGE}px API limit and image processing failed. ` +
-          `Please resize the image to reduce its pixel dimensions.`,
-      )
-    }
-
     // Calculate the base64 size (API limit is on base64-encoded length)
     const base64Size = Math.ceil((originalSize * 4) / 3)
 
@@ -478,21 +463,18 @@ export async function maybeResizeAndDownsampleImageBuffer(
       (imageBuffer.readUInt32BE(16) > IMAGE_MAX_WIDTH ||
         imageBuffer.readUInt32BE(20) > IMAGE_MAX_HEIGHT)
 
-    // When Canvas exists, downsample images over the many-image 2000px bound
-    // so they are less likely to 400 a later multi-image request. When it
-    // does not (Windows Bun CLI), leave an in-budget single image alone —
-    // the API resizes that case server-side, and throwing here is caught by
-    // getImageFromClipboard() as "No image found".
-    if (base64Size <= API_IMAGE_MAX_BASE64_SIZE) {
-      const limitResult = await enforceManyImageDimensionLimit(
-        imageBuffer,
-        detected,
-        originalSize,
-        errorType,
-      )
-      if (limitResult) {
-        return limitResult
-      }
+    // Try Canvas before rejecting either the payload or the 8000px hard edge:
+    // a large source can still produce an admissible replacement. The shared
+    // helper validates the replacement payload, and if recovery is unavailable
+    // it enforces the original hard edge before this route chooses a size error.
+    const limitResult = await enforceManyImageDimensionLimit(
+      imageBuffer,
+      detected,
+      originalSize,
+      errorType,
+    )
+    if (limitResult) {
+      return limitResult
     }
 
     // If original image's base64 encoding is within API limit, allow it through uncompressed

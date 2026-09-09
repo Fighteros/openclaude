@@ -537,7 +537,7 @@ describe('maybeResizeAndDownsampleImageBuffer — #1964 fixes', () => {
     }
   })
 
-  test('catch block: oversized JPEG downsampled via Canvas returns the jpeg subtype', async () => {
+  test('catch block: JPEG over the API edge recovers through Canvas with the jpeg subtype', async () => {
     mock.module(imageProcessorPath, () => ({
       ...actualImageProcessor,
       getImageProcessor: () => Promise.resolve(() => {
@@ -550,7 +550,7 @@ describe('maybeResizeAndDownsampleImageBuffer — #1964 fixes', () => {
     const dataUrl = `data:image/jpeg;base64,${downsampledBytes.toString('base64')}`
     const canvas = installBrandCheckingDocument(dataUrl)
 
-    const imageBuffer = makeJpegBuffer(3840, 2160)
+    const imageBuffer = makeJpegBuffer(8001, 2160)
     try {
       const result = await maybeResizeAndDownsampleImageBuffer(
         imageBuffer,
