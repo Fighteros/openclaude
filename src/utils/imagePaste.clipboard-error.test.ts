@@ -5,11 +5,13 @@ import * as actualLogModule from './log.js'
 
 type ImagePasteModule = typeof import('./imagePaste.js')
 
-const { ImageResizeError } = actualImageResizerModule
+const originalImageResizerExports = { ...actualImageResizerModule }
+const originalLogExports = { ...actualLogModule }
+const { ImageResizeError } = originalImageResizerExports
 
-async function restoreMocks(): Promise<void> {
-  mock.module('./imageResizer.js', () => actualImageResizerModule)
-  mock.module('./log.js', () => actualLogModule)
+function restoreMocks(): void {
+  mock.module('./imageResizer.js', () => originalImageResizerExports)
+  mock.module('./log.js', () => originalLogExports)
 }
 
 async function importImagePaste(): Promise<ImagePasteModule> {

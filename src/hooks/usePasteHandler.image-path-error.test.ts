@@ -11,8 +11,10 @@ import * as actualImagePasteModule from '../utils/imagePaste.js'
 type PasteHandlerModule = typeof import('./usePasteHandler.js')
 type PasteHandlerResult = ReturnType<PasteHandlerModule['usePasteHandler']>
 
-async function restoreMocks(): Promise<void> {
-  mock.module('../utils/imagePaste.js', () => actualImagePasteModule)
+const originalImagePasteExports = { ...actualImagePasteModule }
+
+function restoreMocks(): void {
+  mock.module('../utils/imagePaste.js', () => originalImagePasteExports)
 }
 
 async function importPasteHandler(): Promise<PasteHandlerModule> {

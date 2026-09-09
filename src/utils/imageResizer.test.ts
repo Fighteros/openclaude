@@ -32,13 +32,13 @@ async function loadResizerModule() {
   return import(`${imageResizerPath}?t=${Date.now()}-${Math.random()}`)
 }
 
-const actualImageProcessor = await import(
-  `${imageProcessorPath}?actual=${Date.now()}`
-)
+const actualImageProcessor = await import(imageProcessorPath)
+const originalImageProcessorExports = { ...actualImageProcessor }
 
 afterEach(() => {
   mockMetadata = { width: 10, height: 10, format: 'png' }
   throwOnSharpConstruction = false
+  mock.module(imageProcessorPath, () => originalImageProcessorExports)
   mock.restore()
 })
 

@@ -9,6 +9,9 @@ import * as actualImageResizerModule from './imageResizer.js'
 type ImagePasteModule = typeof import('./imagePaste.js')
 type ExecaCall = [string, ...unknown[]]
 
+const originalExecFileExports = { ...actualExecFileModule }
+const originalExecaExports = { ...actualExecaModule }
+const originalImageResizerExports = { ...actualImageResizerModule }
 const originalPlatform = process.platform
 const originalTemp = process.env.TEMP
 const originalClaudeCodeTmpdir = process.env.CLAUDE_CODE_TMPDIR
@@ -21,10 +24,10 @@ function setPlatform(platform: NodeJS.Platform): void {
   })
 }
 
-async function restoreMocks(): Promise<void> {
-  mock.module('./execFileNoThrow.js', () => actualExecFileModule)
-  mock.module('execa', () => actualExecaModule)
-  mock.module('./imageResizer.js', () => actualImageResizerModule)
+function restoreMocks(): void {
+  mock.module('./execFileNoThrow.js', () => originalExecFileExports)
+  mock.module('execa', () => originalExecaExports)
+  mock.module('./imageResizer.js', () => originalImageResizerExports)
 }
 
 async function importImagePaste(): Promise<ImagePasteModule> {
