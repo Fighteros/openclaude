@@ -537,6 +537,33 @@ describe('maybeResizeAndDownsampleImageBuffer — #1964 fixes', () => {
     }
   })
 
+  test('catch block: oversized JPEG downsampled via Canvas returns the jpeg subtype', async () => {
+    mock.module(imageProcessorPath, () => ({
+      ...actualImageProcessor,
+      getImageProcessor: () => Promise.resolve(() => {
+        throw new Error('image_processor_napi crashed')
+      }),
+    }))
+    const { maybeResizeAndDownsampleImageBuffer } = await loadResizerModule()
+
+    const downsampledBytes = Buffer.from('downsampled-jpeg')
+    const dataUrl = `data:image/jpeg;base64,${downsampledBytes.toString('base64')}`
+    const canvas = installBrandCheckingDocument(dataUrl)
+
+    const imageBuffer = makeJpegBuffer(3840, 2160)
+    try {
+      const result = await maybeResizeAndDownsampleImageBuffer(
+        imageBuffer,
+        imageBuffer.length,
+        'jpeg',
+      )
+      expect(result.buffer.equals(downsampledBytes)).toBe(true)
+      expect(result.mediaType).toBe('jpeg')
+    } finally {
+      canvas.restore()
+    }
+  })
+
   test('catch block: createImageBitmap without fetch still downsamples via Image', async () => {
     mock.module(imageProcessorPath, () => ({
       ...actualImageProcessor,
