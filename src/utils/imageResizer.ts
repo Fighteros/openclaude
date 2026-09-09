@@ -452,17 +452,6 @@ export async function maybeResizeAndDownsampleImageBuffer(
     // The API only rejects images on the base64 byte-size limit; it resizes
     // oversized dimensions (> 1568px) server-side. So a dimensionally-large
     // but base64-small image is allowed through here rather than throwing.
-    // PNG sig is 8 bytes, IHDR dims at 16-24. `overDim` is still used below to
-    // pick the right error message when the base64 limit is also exceeded.
-    const overDim =
-      imageBuffer.length >= 24 &&
-      imageBuffer[0] === 0x89 &&
-      imageBuffer[1] === 0x50 &&
-      imageBuffer[2] === 0x4e &&
-      imageBuffer[3] === 0x47 &&
-      (imageBuffer.readUInt32BE(16) > IMAGE_MAX_WIDTH ||
-        imageBuffer.readUInt32BE(20) > IMAGE_MAX_HEIGHT)
-
     // Try Canvas before rejecting either the payload or the 8000px hard edge:
     // a large source can still produce an admissible replacement. The shared
     // helper validates the replacement payload, and if recovery is unavailable
@@ -489,12 +478,9 @@ export async function maybeResizeAndDownsampleImageBuffer(
 
     // Image is too large and we failed to compress it - fail with user-friendly error
     throw new ImageResizeError(
-      overDim
-        ? `Unable to resize image — dimensions exceed the ${IMAGE_MAX_WIDTH}x${IMAGE_MAX_HEIGHT}px limit and image processing failed. ` +
-            `Please resize the image to reduce its pixel dimensions.`
-        : `Unable to resize image (${formatFileSize(originalSize)} raw, ${formatFileSize(base64Size)} base64). ` +
-            `The image exceeds the 5MB API limit and compression failed. ` +
-            `Please resize the image manually or use a smaller image.`,
+      `Unable to resize image (${formatFileSize(originalSize)} raw, ${formatFileSize(base64Size)} base64). ` +
+        `The image exceeds the 5MB API limit and compression failed. ` +
+        `Please resize the image manually or use a smaller image.`,
     )
   }
 }

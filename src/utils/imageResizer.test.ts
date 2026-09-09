@@ -402,15 +402,14 @@ describe('maybeResizeAndDownsampleImageBuffer — #1964 fixes', () => {
     expect(result.mediaType).toBe('png')
   })
 
-  test('catch block: image over 5MB base64 still throws ImageResizeError', async () => {
+  test('catch block: image over 5MB and 1568px reports the payload limit', async () => {
     mock.module(imageProcessorPath, () => ({
       ...actualImageProcessor,
       getImageProcessor: () => Promise.resolve(() => {
         throw new Error('image_processor_napi crashed')
       }),
     }))
-    const { maybeResizeAndDownsampleImageBuffer, ImageResizeError } =
-      await loadResizerModule()
+    const { maybeResizeAndDownsampleImageBuffer } = await loadResizerModule()
 
     // A large buffer: base64 size = ceil(len*4/3) must exceed 5MB.
     const imageBuffer = Buffer.concat([
@@ -424,7 +423,7 @@ describe('maybeResizeAndDownsampleImageBuffer — #1964 fixes', () => {
         imageBuffer.length,
         'png',
       ),
-    ).rejects.toBeInstanceOf(ImageResizeError)
+    ).rejects.toThrow('5MB API limit')
   })
 
   test('catch block: image over 2000px is allowed through when downsample unavailable', async () => {
