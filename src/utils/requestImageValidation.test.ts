@@ -1,11 +1,18 @@
 import { afterEach, describe, expect, mock, test } from 'bun:test'
 import type { BetaImageBlockParam, BetaMessageParam } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
+import * as logModule from './log.js'
 import * as resizer from './imageResizer.js'
-import { prepareImagesForAnthropicRequest, usesAnthropicImageLimits } from './requestImageValidation.js'
+import {
+  prepareImagesForAnthropicRequest,
+  RequestImageDimensionsError,
+  usesAnthropicImageLimits,
+} from './requestImageValidation.js'
 
 const originalExports = { ...resizer }
+const originalLogExports = { ...logModule }
 afterEach(() => {
   mock.module('./imageResizer.js', () => originalExports)
+  mock.module('./log.js', () => originalLogExports)
   mock.restore()
 })
 
@@ -72,8 +79,45 @@ describe('final Anthropic request image limits', () => {
     await expect(prepareImagesForAnthropicRequest(messages(21))).rejects.toThrow('Resize the image before sending')
   })
 
-  test.each(['firstParty', 'bedrock', 'vertex', 'foundry'])('applies to %s Anthropic transport', apiProvider => {
-    expect(usesAnthropicImageLimits({ apiProvider, isFirstPartyBaseUrl: true, isGithubNativeAnthropic: false, hasProviderOverride: false })).toBe(true)
+  test('logs the processing failure and attaches it as the wrapper cause', async () => {
+    const logError = mock(() => {})
+    mock.module('./log.js', () => ({ ...originalLogExports, logError }))
+    const resizeFailure = new resizer.ImageResizeError(
+      'Unable to resize image — dimensions exceed the many-image limit and image processing failed.',
+    )
+    mockResize(async () => {
+      throw resizeFailure
+    })
+    const thrown: unknown = await prepareImagesForAnthropicRequest(messages(21)).catch(error => error)
+    expect(thrown).toBeInstanceOf(RequestImageDimensionsError)
+    const wrapper = thrown as RequestImageDimensionsError
+    expect(wrapper.cause).toBe(resizeFailure)
+    expect(wrapper.message).toContain('Resize the image before sending')
+    expect(logError).toHaveBeenCalledTimes(1)
+    expect(logError).toHaveBeenCalledWith(resizeFailure)
+  })
+
+  test('rethrows its own validation error unchanged without logging', async () => {
+    const logError = mock(() => {})
+    mock.module('./log.js', () => ({ ...originalLogExports, logError }))
+    // Processing succeeds, but the output still violates the dimension limit.
+    mockResize(async () => ({ buffer: png(3840, 2160), mediaType: 'png' }))
+    const thrown: unknown = await prepareImagesForAnthropicRequest(messages(21)).catch(error => error)
+    expect(thrown).toBeInstanceOf(RequestImageDimensionsError)
+    expect((thrown as RequestImageDimensionsError).cause).toBeUndefined()
+    expect(logError).not.toHaveBeenCalled()
+  })
+
+  test.each([
+    ['firstParty', true],
+    ['bedrock', true],
+    ['bedrock', false],
+    ['vertex', true],
+    ['vertex', false],
+    ['foundry', true],
+    ['foundry', false],
+  ] as const)('applies to %s Anthropic transport (first-party endpoint: %s)', (apiProvider, isFirstPartyBaseUrl) => {
+    expect(usesAnthropicImageLimits({ apiProvider, isFirstPartyBaseUrl, isGithubNativeAnthropic: false, hasProviderOverride: false })).toBe(true)
   })
   test('excludes shims, custom endpoints, and agent overrides', () => {
     const route = { apiProvider: 'openai', isFirstPartyBaseUrl: false, isGithubNativeAnthropic: false, hasProviderOverride: false }

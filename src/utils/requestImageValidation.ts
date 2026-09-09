@@ -8,12 +8,14 @@ import {
   maybeResizeAndDownsampleImageBuffer,
   readImageDimensions,
 } from './imageResizer.js'
+import { logError } from './log.js'
 
 export class RequestImageDimensionsError extends ImageResizeError {
-  constructor() {
+  constructor(options?: ErrorOptions) {
     super(
       'Requests with more than 20 images require each image to be at most 2000×2000 pixels. ' +
       'Local image processing could not produce a compliant image. Resize the image before sending, or start a new conversation with fewer images.',
+      options,
     )
     this.name = 'RequestImageDimensionsError'
   }
@@ -83,8 +85,13 @@ export async function prepareImagesForAnthropicRequest<
             ...block,
             source: { ...block.source, data, media_type: `image/${resized.mediaType}` },
           })
-        } catch {
-          throw error()
+        } catch (cause) {
+          // Keep our own validation error intact. Otherwise log the underlying
+          // processing failure and attach it as the cause, so the actionable
+          // wrapper message does not discard the original diagnostics.
+          if (cause instanceof RequestImageDimensionsError) throw cause
+          logError(cause)
+          throw new RequestImageDimensionsError({ cause })
         }
       } else {
         prepared.push(block)

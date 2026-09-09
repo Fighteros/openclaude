@@ -38,8 +38,8 @@ const ERROR_TYPE_PERMISSION = 8
  * Error thrown when image resizing fails and the image exceeds the API limit.
  */
 export class ImageResizeError extends Error {
-  constructor(message: string) {
-    super(message)
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options)
     this.name = 'ImageResizeError'
   }
 }
