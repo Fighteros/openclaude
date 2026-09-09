@@ -165,7 +165,12 @@ export function usePasteHandler({
 
               // Process all image paths
               void Promise.all(
-                imagePaths.map(imagePath => tryReadImageFromPath(imagePath)),
+                imagePaths.map(imagePath =>
+                  tryReadImageFromPath(imagePath).catch(error => {
+                    logError(error as Error)
+                    return null
+                  }),
+                ),
               ).then(results => {
                 const validImages = results.filter(
                   (r): r is NonNullable<typeof r> => r !== null,
