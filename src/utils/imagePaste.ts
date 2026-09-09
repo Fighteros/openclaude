@@ -279,6 +279,7 @@ export async function getImageFromClipboard(): Promise<ImageWithDimensions | nul
   }
 
   const { commands, screenshotPath } = getClipboardCommands()
+  let screenshotSaved = false
   try {
     // Check if clipboard has image.
     const checkResult = await execa(commands.checkImage, {
@@ -299,6 +300,7 @@ export async function getImageFromClipboard(): Promise<ImageWithDimensions | nul
     if (saveResult.exitCode !== 0) {
       return null
     }
+    screenshotSaved = true
 
     // Read the image and convert to base64
     let imageBuffer = getFsImplementation().readFileBytesSync(screenshotPath)
@@ -325,9 +327,6 @@ export async function getImageFromClipboard(): Promise<ImageWithDimensions | nul
     // Detect format from magic bytes
     const mediaType = detectImageFormatFromBase64(base64Image)
 
-    // Cleanup (fire-and-forget, don't await)
-    void execa(commands.deleteFile, { shell: true, reject: false })
-
     return {
       base64: base64Image,
       mediaType,
@@ -336,6 +335,11 @@ export async function getImageFromClipboard(): Promise<ImageWithDimensions | nul
   } catch (e) {
     rethrowIfClipboardResizeError(e)
     return null
+  } finally {
+    if (screenshotSaved) {
+      // Cleanup every post-save exit, including resize/admission rejection.
+      void execa(commands.deleteFile, { shell: true, reject: false })
+    }
   }
 }
 

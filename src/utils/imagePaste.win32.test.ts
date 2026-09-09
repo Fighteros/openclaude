@@ -104,10 +104,12 @@ describe('Windows clipboard image handling', () => {
     const { getImageFromClipboard } = await importImagePaste()
 
     expect(await getImageFromClipboard()).toBeNull()
-    expect(execa).toHaveBeenCalledTimes(2)
+    expect(execa).toHaveBeenCalledTimes(3)
     const checkCall = execa.mock.calls[0] as unknown as ExecaCall | undefined
     expect(checkCall?.[0]).toContain('powershell -NoProfile -Command')
     expect(checkCall?.[0]).toContain('Clipboard]::ContainsImage()')
+    const deleteCall = execa.mock.calls[2] as unknown as ExecaCall | undefined
+    expect(deleteCall?.[0]).toContain('del /f')
   })
 
   test('getImageFromClipboard keeps Windows backslashes and escapes apostrophes in the save path', async () => {
@@ -252,5 +254,8 @@ describe('Windows clipboard image handling', () => {
     await expect(getImageFromClipboard()).rejects.toBeInstanceOf(
       ImageResizeError,
     )
+    expect(execa).toHaveBeenCalledTimes(3)
+    const deleteCall = execa.mock.calls[2] as unknown as ExecaCall | undefined
+    expect(deleteCall?.[0]).toContain('del /f')
   })
 })

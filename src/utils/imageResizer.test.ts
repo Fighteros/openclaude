@@ -486,6 +486,28 @@ describe('maybeResizeAndDownsampleImageBuffer — #1964 fixes', () => {
     ).rejects.toBeInstanceOf(ImageResizeError)
   })
 
+  test('catch block: image over both payload and API edge reports the 8000px hard limit', async () => {
+    mock.module(imageProcessorPath, () => ({
+      ...actualImageProcessor,
+      getImageProcessor: () => Promise.resolve(() => {
+        throw new Error('image_processor_napi crashed')
+      }),
+    }))
+    const { maybeResizeAndDownsampleImageBuffer } = await loadResizerModule()
+    const imageBuffer = Buffer.concat([
+      makePngBuffer(8001, 100),
+      randomBytes(5 * 1024 * 1024),
+    ])
+
+    await expect(
+      maybeResizeAndDownsampleImageBuffer(
+        imageBuffer,
+        imageBuffer.length,
+        'png',
+      ),
+    ).rejects.toThrow('8000x8000px API limit')
+  })
+
   test('catch block: image over 2000px is downsampled via Canvas fallback when available', async () => {
     mock.module(imageProcessorPath, () => ({
       ...actualImageProcessor,
@@ -634,6 +656,17 @@ describe('maybeResizeAndDownsampleImageBuffer — #1964 fixes', () => {
       width: 1500,
       height: 1200,
     })
+  })
+
+  test('readImageDimensions: rejects WebP payloads with invalid VP8 signatures', async () => {
+    const { readImageDimensions } = await loadResizerModule()
+    const invalidLossless = makeWebpLosslessBuffer(1000, 800)
+    invalidLossless[20] = 0
+    const invalidLossy = makeWebpLossyBuffer(1000, 800)
+    invalidLossy[23] = 0
+
+    expect(readImageDimensions(invalidLossless)).toBeNull()
+    expect(readImageDimensions(invalidLossy)).toBeNull()
   })
 
   test('readImageDimensions: VP8 lossy at exactly the 2000px boundary parses exact dimensions', async () => {

@@ -446,6 +446,21 @@ export async function maybeResizeAndDownsampleImageBuffer(
     const detected = detectImageFormatFromBuffer(imageBuffer)
     const normalizedExt = detected.slice(6) // Remove 'image/' prefix
 
+    // Check the API-hard edge before payload branching. Otherwise an image
+    // that exceeds both limits skips the many-image helper below and reports
+    // the unrelated 1568px client resize target instead of the 8000px API cap.
+    const fallbackDimensions = readImageDimensions(imageBuffer)
+    if (
+      fallbackDimensions &&
+      (fallbackDimensions.width > IMAGE_API_MAX_EDGE ||
+        fallbackDimensions.height > IMAGE_API_MAX_EDGE)
+    ) {
+      throw new ImageResizeError(
+        `Unable to resize image — dimensions exceed the ${IMAGE_API_MAX_EDGE}x${IMAGE_API_MAX_EDGE}px API limit and image processing failed. ` +
+          `Please resize the image to reduce its pixel dimensions.`,
+      )
+    }
+
     // Calculate the base64 size (API limit is on base64-encoded length)
     const base64Size = Math.ceil((originalSize * 4) / 3)
 
@@ -959,7 +974,7 @@ function readEncodedWebPDimensions(
       // size + 1-byte 0x2F signature). As a little-endian 32-bit word read
       // from byte 21, bits [0..13] = width-1 and bits [14..27] = height-1.
       // Verified against real sharp-encoded VP8L frames.
-      if (buffer.length < 25) return null
+      if (buffer.length < 25 || buffer[20] !== 0x2f) return null
       const bits = buffer.readUInt32LE(21)
       const width = ((bits & 0x3fff) + 1) >>> 0
       const height = (((bits >>> 14) & 0x3fff) + 1) >>> 0
@@ -972,6 +987,13 @@ function readEncodedWebPDimensions(
       // scale factor, masked off). Verified against real sharp-encoded VP8
       // frames.
       if (buffer.length < 30) return null
+      if (
+        buffer[23] !== 0x9d ||
+        buffer[24] !== 0x01 ||
+        buffer[25] !== 0x2a
+      ) {
+        return null
+      }
       const width = buffer.readUInt16LE(26) & 0x3fff
       const height = buffer.readUInt16LE(28) & 0x3fff
       return { width, height }
