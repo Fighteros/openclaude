@@ -1,21 +1,15 @@
 import { afterEach, describe, expect, mock, test } from 'bun:test'
 import { IMAGE_TARGET_RAW_SIZE } from '../constants/apiLimits.js'
-import { ImageResizeError } from './imageResizer.js'
+import * as actualImageResizerModule from './imageResizer.js'
+import * as actualLogModule from './log.js'
 
 type ImagePasteModule = typeof import('./imagePaste.js')
-type ImageResizerModule = typeof import('./imageResizer.js')
-type LogModule = typeof import('./log.js')
 
-let actualImageResizerModule: ImageResizerModule | undefined
-let actualLogModule: LogModule | undefined
+const { ImageResizeError } = actualImageResizerModule
 
 async function restoreMocks(): Promise<void> {
-  actualImageResizerModule ??= await import(
-    `./imageResizer.js?actual=${Date.now()}-${Math.random()}`
-  )
-  actualLogModule ??= await import(`./log.js?actual=${Date.now()}-${Math.random()}`)
-  mock.module('./imageResizer.js', () => actualImageResizerModule!)
-  mock.module('./log.js', () => actualLogModule!)
+  mock.module('./imageResizer.js', () => actualImageResizerModule)
+  mock.module('./log.js', () => actualLogModule)
 }
 
 async function importImagePaste(): Promise<ImagePasteModule> {
@@ -51,12 +45,9 @@ describe('clipboard image paste error contract', () => {
   })
 
   test('logClipboardImagePasteRejection reports the rejection through logError', async () => {
-    actualLogModule ??= await import(
-      `./log.js?actual=${Date.now()}-${Math.random()}`
-    )
     const logError = mock(() => {})
     mock.module('./log.js', () => ({
-      ...actualLogModule!,
+      ...actualLogModule,
       logError,
     }))
     const { logClipboardImagePasteRejection } = await importImagePaste()
@@ -67,17 +58,14 @@ describe('clipboard image paste error contract', () => {
   })
 
   test('native clipboard resize failure rejects instead of returning a fallback image', async () => {
-    actualImageResizerModule ??= await import(
-      `./imageResizer.js?actual=${Date.now()}-${Math.random()}`
-    )
-    const ImageResizeErrorCtor = actualImageResizerModule!.ImageResizeError
+    const ImageResizeErrorCtor = actualImageResizerModule.ImageResizeError
     const maybeResizeAndDownsampleImageBuffer = mock(async () => {
       throw new ImageResizeErrorCtor(
         'Unable to resize image — the image exceeds the size limit even after compression and image processing failed to read its dimensions. Please use a smaller or lower-resolution image.',
       )
     })
     mock.module('./imageResizer.js', () => ({
-      ...actualImageResizerModule!,
+      ...actualImageResizerModule,
       maybeResizeAndDownsampleImageBuffer,
     }))
     const { clipboardImageFromNativePng } = await importImagePaste()
