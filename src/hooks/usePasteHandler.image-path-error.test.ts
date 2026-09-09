@@ -99,3 +99,50 @@ test('a rejected image-path read is consumed without dropping valid siblings', a
     root.unmount()
   }
 })
+
+test('a rejected sole image path is not inserted into the prompt as text', async () => {
+  const tryReadImageFromPath = mock(async () => {
+    throw new Error('image resize failed')
+  })
+  mock.module('../utils/imagePaste.js', () => ({
+    ...actualImagePasteModule,
+    tryReadImageFromPath,
+  }))
+  const { usePasteHandler } = await importPasteHandler()
+
+  let handler: PasteHandlerResult | undefined
+  const onPaste = mock(() => {})
+  function Probe(): null {
+    handler = usePasteHandler({
+      onInput: () => {},
+      onImagePaste: () => {},
+      onPaste,
+    })
+    return null
+  }
+
+  const stdout = new PassThrough()
+  ;(stdout as unknown as { columns: number }).columns = 80
+  const root = await createRoot({
+    stdout: stdout as unknown as NodeJS.WriteStream,
+    patchConsole: false,
+  })
+
+  try {
+    root.render(createElement(Probe))
+    await waitFor(() => handler !== undefined)
+
+    handler!.wrappedOnInput(
+      '/tmp/broken.png',
+      {} as Key,
+      { keypress: { isPasted: true } } as InputEvent,
+    )
+
+    await waitFor(() => handler?.isPasting === true)
+    await waitFor(() => tryReadImageFromPath.mock.calls.length === 1)
+    await waitFor(() => handler?.isPasting === false)
+    expect(onPaste).not.toHaveBeenCalled()
+  } finally {
+    root.unmount()
+  }
+})

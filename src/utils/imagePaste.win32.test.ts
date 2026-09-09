@@ -2,20 +2,17 @@ import { afterEach, describe, expect, mock, test } from 'bun:test'
 import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import * as actualExecaModule from 'execa'
+import * as actualExecFileModule from './execFileNoThrow.js'
+import * as actualImageResizerModule from './imageResizer.js'
 
 type ImagePasteModule = typeof import('./imagePaste.js')
-type ExecFileModule = typeof import('./execFileNoThrow.js')
-type ExecaModule = typeof import('execa')
-type ImageResizerModule = typeof import('./imageResizer.js')
 type ExecaCall = [string, ...unknown[]]
 
 const originalPlatform = process.platform
 const originalTemp = process.env.TEMP
 const originalClaudeCodeTmpdir = process.env.CLAUDE_CODE_TMPDIR
 
-let actualExecFileModule: ExecFileModule | undefined
-let actualExecaModule: ExecaModule | undefined
-let actualImageResizerModule: ImageResizerModule | undefined
 let tempDirs: string[] = []
 
 function setPlatform(platform: NodeJS.Platform): void {
@@ -25,18 +22,9 @@ function setPlatform(platform: NodeJS.Platform): void {
 }
 
 async function restoreMocks(): Promise<void> {
-  actualExecFileModule ??= await import(
-    `./execFileNoThrow.js?actual=${Date.now()}-${Math.random()}`
-  )
-  actualExecaModule ??= await import(
-    `execa?actual=${Date.now()}-${Math.random()}`
-  )
-  actualImageResizerModule ??= await import(
-    `./imageResizer.js?actual=${Date.now()}-${Math.random()}`
-  )
-  mock.module('./execFileNoThrow.js', () => actualExecFileModule!)
-  mock.module('execa', () => actualExecaModule!)
-  mock.module('./imageResizer.js', () => actualImageResizerModule!)
+  mock.module('./execFileNoThrow.js', () => actualExecFileModule)
+  mock.module('execa', () => actualExecaModule)
+  mock.module('./imageResizer.js', () => actualImageResizerModule)
 }
 
 async function importImagePaste(): Promise<ImagePasteModule> {
@@ -72,6 +60,7 @@ describe('Windows clipboard image handling', () => {
       stderr: '',
     }))
     mock.module('./execFileNoThrow.js', () => ({
+      ...actualExecFileModule,
       execFileNoThrowWithCwd,
     }))
 
@@ -99,7 +88,7 @@ describe('Windows clipboard image handling', () => {
       stdout: 'False\r\n',
       stderr: '',
     }))
-    mock.module('execa', () => ({ execa }))
+    mock.module('execa', () => ({ ...actualExecaModule, execa }))
 
     const { getImageFromClipboard } = await importImagePaste()
 
@@ -130,7 +119,7 @@ describe('Windows clipboard image handling', () => {
       stdout: '',
       stderr: '',
     })
-    mock.module('execa', () => ({ execa }))
+    mock.module('execa', () => ({ ...actualExecaModule, execa }))
 
     const { getImageFromClipboard } = await importImagePaste()
 
@@ -167,9 +156,6 @@ describe('Windows clipboard image handling', () => {
       }
     })
 
-    actualImageResizerModule ??= await import(
-      `./imageResizer.js?actual=${Date.now()}-${Math.random()}`
-    )
     const maybeResizeAndDownsampleImageBuffer = mock(async () => ({
       buffer: imageBuffer,
       mediaType: 'png',
@@ -180,9 +166,9 @@ describe('Windows clipboard image handling', () => {
         displayHeight: 1,
       },
     }))
-    mock.module('execa', () => ({ execa }))
+    mock.module('execa', () => ({ ...actualExecaModule, execa }))
     mock.module('./imageResizer.js', () => ({
-      ...actualImageResizerModule!,
+      ...actualImageResizerModule,
       maybeResizeAndDownsampleImageBuffer,
     }))
 
@@ -235,18 +221,15 @@ describe('Windows clipboard image handling', () => {
       }
     })
 
-    actualImageResizerModule ??= await import(
-      `./imageResizer.js?actual=${Date.now()}-${Math.random()}`
-    )
-    const ImageResizeError = actualImageResizerModule!.ImageResizeError
+    const ImageResizeError = actualImageResizerModule.ImageResizeError
     const maybeResizeAndDownsampleImageBuffer = mock(async () => {
       throw new ImageResizeError(
         'Unable to resize image — dimensions exceed the 8000x8000px API limit and image processing failed. Please resize the image to reduce its pixel dimensions.',
       )
     })
-    mock.module('execa', () => ({ execa }))
+    mock.module('execa', () => ({ ...actualExecaModule, execa }))
     mock.module('./imageResizer.js', () => ({
-      ...actualImageResizerModule!,
+      ...actualImageResizerModule,
       maybeResizeAndDownsampleImageBuffer,
     }))
 
