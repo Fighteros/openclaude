@@ -35,7 +35,62 @@ function mockResize(implementation: typeof resizer.maybeResizeAndDownsampleImage
   return resize
 }
 
+const document = {
+  type: 'document' as const,
+  source: { type: 'text' as const, media_type: 'text/plain' as const, data: 'Reference document' },
+}
+
 describe('final Anthropic request image limits', () => {
+  test.each([false, true])('mixed-media threshold uses countDocuments=%s', async countDocuments => {
+    const resize = mockResize(async () => ({ buffer: png(1568, 882), mediaType: 'png' }))
+    const input = messages(20)
+    input.push({ role: 'user', content: [document] })
+    const result = await prepareImagesForAnthropicRequest(input, { countDocuments })
+    expect(resize).toHaveBeenCalledTimes(countDocuments ? 20 : 0)
+    expect(result[1]).toEqual(input[1])
+    if (!countDocuments) expect(result).toBe(input)
+  })
+
+  test('19 images and one document preserve the partner 20-block fast path', async () => {
+    const resize = mockResize(async () => { throw new Error('unavailable') })
+    const input = messages(19)
+    input.push({ role: 'user', content: [document] })
+    expect(await prepareImagesForAnthropicRequest(input, { countDocuments: true })).toBe(input)
+    expect(resize).not.toHaveBeenCalled()
+  })
+
+  test('counts restored nested documents without transforming them or mutating history', async () => {
+    const resize = mockResize(async () => ({ buffer: png(1568, 882), mediaType: 'png' }))
+    const input = structuredClone(messages(20))
+    input.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: 'document-reader', content: [document] }] })
+    const before = structuredClone(input)
+    const result = await prepareImagesForAnthropicRequest(input, { countDocuments: true })
+    expect(resize).toHaveBeenCalledTimes(20)
+    expect(input).toEqual(before)
+    expect(result[1]).toEqual(before[1])
+    expect(result[0]!.content).toHaveLength(20)
+    expect(JSON.stringify(result[0])).toContain(png(1568, 882).toString('base64'))
+  })
+
+  test.each(['throw', 'passthrough'] as const)('mixed-media %s failure explains the combined threshold', async mode => {
+    mockResize(async buffer => {
+      if (mode === 'throw') throw new Error('unavailable')
+      return { buffer, mediaType: 'png' }
+    })
+    const input = messages(20)
+    input.push({ role: 'user', content: [document] })
+    const before = structuredClone(input)
+    await expect(prepareImagesForAnthropicRequest(input, { countDocuments: true })).rejects.toThrow('20 images and documents combined')
+    expect(input).toEqual(before)
+  })
+
+  test('documents alone are counted but are never image processing targets', async () => {
+    const resize = mockResize(async () => { throw new Error('must not resize documents') })
+    const input: BetaMessageParam[] = [{ role: 'user', content: Array.from({ length: 21 }, () => document) }]
+    expect(await prepareImagesForAnthropicRequest(input, { countDocuments: true })).toEqual(input)
+    expect(resize).not.toHaveBeenCalled()
+  })
+
   test('20 compact 4K PNGs remain unchanged without processing', async () => {
     const resize = mockResize(async () => { throw new Error('unavailable') })
     const input = messages(20)

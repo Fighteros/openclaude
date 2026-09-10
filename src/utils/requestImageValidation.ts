@@ -11,10 +11,12 @@ import {
 import { logError } from './log.js'
 
 export class RequestImageDimensionsError extends ImageResizeError {
-  constructor(options?: ErrorOptions) {
+  constructor(options?: ErrorOptions & { countDocuments?: boolean }) {
+    const countedMedia = options?.countDocuments ? 'images and documents combined' : 'images'
+    const fewerMedia = options?.countDocuments ? 'images or documents' : 'images'
     super(
-      'Requests with more than 20 images require each image to be at most 2000×2000 pixels. ' +
-      'Local image processing could not produce a compliant image. Resize the image before sending, or start a new conversation with fewer images.',
+      `Requests with more than 20 ${countedMedia} require each image to be at most 2000×2000 pixels. ` +
+      `Local image processing could not produce a compliant image. Resize the image before sending, or start a new conversation with fewer ${fewerMedia}.`,
       options,
     )
     this.name = 'RequestImageDimensionsError'
@@ -39,21 +41,21 @@ export function usesAnthropicImageLimits(options: {
 /** Validate the final, pruned request, including images restored from history. */
 export async function prepareImagesForAnthropicRequest<
   T extends { content: unknown } | { message: { content: unknown } },
->(messages: T[]): Promise<T[]> {
-  let imageCount = 0
-  function countImages(blocks: unknown): void {
+>(messages: T[], { countDocuments = false }: { countDocuments?: boolean } = {}): Promise<T[]> {
+  let mediaCount = 0
+  function countMedia(blocks: unknown): void {
     if (!Array.isArray(blocks)) return
     for (const block of blocks) {
-      if (block.type === 'image') imageCount++
-      else if (block.type === 'tool_result') countImages(block.content)
+      if (block.type === 'image' || (countDocuments && block.type === 'document')) mediaCount++
+      else if (block.type === 'tool_result') countMedia(block.content)
     }
   }
   for (const message of messages) {
-    countImages('message' in message ? message.message.content : message.content)
+    countMedia('message' in message ? message.message.content : message.content)
   }
-  if (imageCount <= 20) return messages
+  if (mediaCount <= 20) return messages
 
-  const error = () => new RequestImageDimensionsError()
+  const error = () => new RequestImageDimensionsError({ countDocuments })
   const withinLimits = (buffer: Buffer): boolean => {
     const dimensions = readImageDimensions(buffer)
     return dimensions !== null && dimensions.width > 0 && dimensions.height > 0 &&
@@ -91,7 +93,7 @@ export async function prepareImagesForAnthropicRequest<
           // wrapper message does not discard the original diagnostics.
           if (cause instanceof RequestImageDimensionsError) throw cause
           logError(cause)
-          throw new RequestImageDimensionsError({ cause })
+          throw new RequestImageDimensionsError({ cause, countDocuments })
         }
       } else {
         prepared.push(block)

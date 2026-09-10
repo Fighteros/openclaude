@@ -555,8 +555,18 @@ const describeLifecycle = runInProviderIsolatedChild
   : describe
 
 describeLifecycle('Claude API lifecycle tracking', () => {
-  test.each([20, 21])('checks %i retained images before dispatch and yields resize errors', async count => {
+  test.each([
+    { provider: 'firstParty', count: 20, withDocument: false, rejects: false },
+    { provider: 'firstParty', count: 21, withDocument: false, rejects: true },
+    { provider: 'firstParty', count: 20, withDocument: true, rejects: false },
+    { provider: 'bedrock', count: 20, withDocument: true, rejects: true },
+    { provider: 'vertex', count: 20, withDocument: true, rejects: true },
+  ])('validates retained media before dispatch: %j', async ({ provider, count, withDocument, rejects }) => {
     setClientTestEnv()
+    if (provider === 'bedrock') process.env.CLAUDE_CODE_USE_BEDROCK = '1'
+    if (provider === 'vertex') process.env.CLAUDE_CODE_USE_VERTEX = '1'
+    // A recognizable 4K header that cannot be decoded exercises the awaited
+    // local failure path without requiring partner credentials or a live API.
     const buffer = Buffer.alloc(24)
     buffer.write('89504e470d0a1a0a', 'hex')
     buffer.writeUInt32BE(3840, 16)
@@ -570,10 +580,13 @@ describeLifecycle('Claude API lifecycle tracking', () => {
         timestamp: '2026-08-21T00:00:00.000Z',
         message: {
           role: 'user',
-          content: Array.from({ length: count }, () => ({
+          content: [...Array.from({ length: count }, () => ({
             type: 'image',
             source: { type: 'base64', media_type: 'image/png', data: buffer.toString('base64') },
-          })),
+          })), ...(withDocument ? [{
+            type: 'document',
+            source: { type: 'text', media_type: 'text/plain', data: 'Reference document' },
+          }] : [])],
         },
       } as Message],
       systemPrompt: asSystemPrompt(['stable system prompt']),
@@ -589,9 +602,10 @@ describeLifecycle('Claude API lifecycle tracking', () => {
       },
     })
     for await (const event of generator) events.push(event)
-    expect(requests).toBe(count === 20 ? 1 : 0)
-    if (count === 21) {
+    expect(requests).toBe(rejects ? 0 : 1)
+    if (rejects) {
       expect(JSON.stringify(events)).toContain('Resize the image before sending')
+      if (withDocument) expect(JSON.stringify(events)).toContain('20 images and documents combined')
     }
   })
 
